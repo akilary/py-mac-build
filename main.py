@@ -144,11 +144,23 @@ def watch_new_tabs(driver: uc.Chrome, stop_event: threading.Event) -> None:
     stop_event.set()
 
 
+def _remove_quarantine() -> None:
+    """На Mac снимает карантин с chromedriver, иначе macOS убивает процесс (status -9)."""
+    if IS_MAC:
+        import subprocess
+        subprocess.run(
+            ["xattr", "-dr", "com.apple.quarantine", str(BASE_DIR / "driver_cache")],
+            capture_output=True,
+        )
+
+
 def init_driver(city_en: str) -> tuple[uc.Chrome, threading.Event]:
     """Инициализация драйвера"""
     driver_path = ChromeDriverManager(
         cache_manager=DriverCacheManager(root_dir=str(BASE_DIR / "driver_cache"))
     ).install()
+
+    _remove_quarantine()
 
     profile_path = (PROFILE_DIR / city_en).absolute()
     profile_path.mkdir(exist_ok=True)
