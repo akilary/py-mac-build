@@ -1,4 +1,5 @@
 import multiprocessing
+import platform
 import shutil
 import sys
 import threading
@@ -17,9 +18,10 @@ if getattr(sys, "frozen", False):
 else:
     BASE_DIR = Path(__file__).parent
 
-
 PROFILE_DIR = BASE_DIR / "profiles"
 PROFILE_DIR.mkdir(exist_ok=True)
+
+IS_MAC = platform.system() == "Darwin"
 
 MOBILE_UA = (
     "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
@@ -71,6 +73,8 @@ CITY_MAP = {
     "Ulan-Ude": "Улан-Удэ",
     "Kaliningrad": "Калининград",
 }
+
+_WATCH_INTERVAL = 2.5 if IS_MAC else 0.7  # На Mac каждый CDP вызов стоит дороже - опрашиваем реже
 
 
 def list_profiles() -> list[str]:
@@ -135,7 +139,7 @@ def watch_new_tabs(driver: uc.Chrome, stop_event: threading.Event) -> None:
         except WebDriverException:
             break  # Браузер закрыт
 
-        time.sleep(0.3)
+        time.sleep(_WATCH_INTERVAL)
 
     stop_event.set()
 
@@ -157,7 +161,7 @@ def init_driver(city_en: str) -> tuple[uc.Chrome, threading.Event]:
     options.add_argument("--no-first-run")
     options.add_argument("--no-default-browser-check")
 
-    driver = uc.Chrome(options=options, use_subprocess=False, driver_executable_path=driver_path)
+    driver = uc.Chrome(options=options, use_subprocess=True, driver_executable_path=driver_path)
 
     apply_mobile_emulation(driver)
 
@@ -314,9 +318,11 @@ class App(tk.Tk):
         self.update()
 
         def run():
+            launched = False
             try:
                 driver, stop_event = init_driver(city_en)  # noqa
                 driver.get(f"https://yandex.com/")
+                launched = True
 
                 self.active[city_en] = (driver, stop_event)
                 self.after(0, self._refresh_list)  # noqa
@@ -328,17 +334,20 @@ class App(tk.Tk):
                 stop_event.set()
                 driver.quit()
 
+            except Exception as e:
+                import traceback
+
+                tb = traceback.format_exc()
+                print(f"Ошибка: {tb}")
+
+                self.after(0, lambda: self._status_var.set(f"Ошибка: {e}"))  # noqa
+                self.after(0, lambda: messagebox.showerror("Ошибка запуска", tb))  # noqa
+
+            finally:
                 self.active.pop(city_en, None)
                 self.after(0, self._refresh_list)  # noqa
-                self.after(0, lambda: self._status_var.set(f"«{city_ru}» закрыт"))  # noqa
-            except Exception as e:
-                print(f"Ошибка: {e}")
-                import traceback
-                traceback.print_exc()
-                self.after(0, lambda: self._status_var.set(f"Ошибка: {e}"))
-                self.after(0, lambda: messagebox.showerror("Ошибка запуска", traceback.format_exc()))
-                self.active.pop(city_en, None)
-                self.after(0, self._refresh_list)
+                if launched:
+                    self.after(0, lambda: self._status_var.set(f"«{city_ru}» закрыт"))  # noqa
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -376,8 +385,15 @@ if __name__ == "__main__":
         app.protocol("WM_DELETE_WINDOW", app.on_close)
         app.mainloop()
     except Exception as e:
-        print(f"Ошибка: {e}")
         import traceback
-        traceback.print_exc()
-    finally:
-        input("Нажмите Enter для выхода...")
+
+        error_text = traceback.format_exc()
+        print(error_text)
+
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror("Критическая ошибка", error_text)
+            root.destroy()
+        except Exception:
+            pass
