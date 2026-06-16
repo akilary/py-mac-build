@@ -1,10 +1,13 @@
+import logging
 import multiprocessing
 import platform
 import shutil
+import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
+import traceback
 from pathlib import Path
 from tkinter import ttk, messagebox
 
@@ -76,6 +79,24 @@ CITY_MAP = {
 
 _WATCH_INTERVAL = 2.5 if IS_MAC else 0.7  # На Mac каждый CDP вызов стоит дороже - опрашиваем реже
 
+LOG_FILE = BASE_DIR / "debug.log"
+
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    encoding="utf-8",
+)
+
+logger = logging.getLogger(__name__)
+
+logger.info("Запуск приложения")
+logger.info("ОС: %s", platform.platform())
+logger.info("Система: %s", platform.system())
+logger.info("Архитектура: %s", platform.machine())
+logger.info("Версия Python: %s", sys.version)
+logger.info("Рабочая папка: %s", BASE_DIR)
+
 
 def list_profiles() -> list[str]:
     """Загружает список профилей"""
@@ -137,6 +158,7 @@ def watch_new_tabs(driver: uc.Chrome, stop_event: threading.Event) -> None:
 
                 known_handles = current_handles
         except WebDriverException:
+            logger.info("WebDriver завершил работу")
             break  # Браузер закрыт
 
         time.sleep(_WATCH_INTERVAL)
@@ -144,14 +166,44 @@ def watch_new_tabs(driver: uc.Chrome, stop_event: threading.Event) -> None:
     stop_event.set()
 
 
-def _remove_quarantine() -> None:
+def _remove_quarantine(driver_path: str) -> None:
     """На Mac снимает карантин с chromedriver, иначе macOS убивает процесс (status -9)."""
+    logger.info("Снимаю карантин с chromedriver: %s", driver_path)
+
     if IS_MAC:
-        import subprocess
-        subprocess.run(
-            ["xattr", "-dr", "com.apple.quarantine", str(BASE_DIR / "driver_cache")],
-            capture_output=True,
-        )
+        try:
+            before = subprocess.run(
+                ["xattr", "-l", driver_path],
+                capture_output=True,
+                text=True,
+            )
+
+            logger.info("Атрибуты ДО снятия карантина:\n%s", before.stdout)
+
+            result = subprocess.run(
+                ["xattr", "-dr", "com.apple.quarantine", driver_path],
+                capture_output=True,
+                text=True,
+            )
+
+            logger.info("Код возврата xattr: %s", result.returncode)
+
+            if result.stdout:
+                logger.info("Вывод xattr:\n%s", result.stdout)
+
+            if result.stderr:
+                logger.error("Ошибки xattr:\n%s", result.stderr)
+
+            after = subprocess.run(
+                ["xattr", "-l", driver_path],
+                capture_output=True,
+                text=True,
+            )
+
+            logger.info("Атрибуты ПОСЛЕ снятия карантина:\n%s", after.stdout)
+
+        except Exception:
+            logger.exception("Ошибка при снятии карантина")
 
 
 def init_driver(city_en: str) -> tuple[uc.Chrome, threading.Event]:
@@ -160,10 +212,25 @@ def init_driver(city_en: str) -> tuple[uc.Chrome, threading.Event]:
         cache_manager=DriverCacheManager(root_dir=str(BASE_DIR / "driver_cache"))
     ).install()
 
-    _remove_quarantine()
+    logger.info("Chromedriver установлен: %s", driver_path)
+
+    try:
+        version = subprocess.run(
+            [driver_path, "--version"],
+            capture_output=True,
+            text=True,
+        )
+
+        logger.info("Версия chromedriver: %s", version.stdout.strip())
+    except Exception:
+        logger.exception("Не удалось определить версию chromedriver")
+
+    _remove_quarantine(driver_path)
 
     profile_path = (PROFILE_DIR / city_en).absolute()
     profile_path.mkdir(exist_ok=True)
+
+    logger.info("Используется профиль: %s", profile_path)
 
     w, h, _ = DEVICE
 
@@ -173,9 +240,15 @@ def init_driver(city_en: str) -> tuple[uc.Chrome, threading.Event]:
     options.add_argument("--no-first-run")
     options.add_argument("--no-default-browser-check")
 
+    logger.info("Запускаю Chrome")
+
     driver = uc.Chrome(options=options, use_subprocess=True, driver_executable_path=driver_path)
 
+    logger.info("Chrome успешно запущен")
+
     apply_mobile_emulation(driver)
+
+    logger.info("Мобильная эмуляция применена")
 
     stop_event = threading.Event()
     threading.Thread(target=watch_new_tabs, args=(driver, stop_event), daemon=True).start()
@@ -326,14 +399,18 @@ class App(tk.Tk):
             return
 
         city_ru = CITY_MAP.get(city_en, city_en)
-        self._status_var.set(f"Запускаю «{city_ru}»...")
+        self._status_var.set("Загрузка браузера...")
         self.update()
 
         def run():
+            logger.info("Открытие профиля: %s", city_en)
             launched = False
             try:
                 driver, stop_event = init_driver(city_en)  # noqa
+                self._status_var.set(f"Запускаю «{city_ru}»...")
+
                 driver.get(f"https://yandex.com/")
+                logger.info("Страница открыта")
                 launched = True
 
                 self.active[city_en] = (driver, stop_event)
@@ -347,10 +424,8 @@ class App(tk.Tk):
                 driver.quit()
 
             except Exception as e:
-                import traceback
-
                 tb = traceback.format_exc()
-                print(f"Ошибка: {tb}")
+                logger.exception("Ошибка при запуске профиля")
 
                 self.after(0, lambda: self._status_var.set(f"Ошибка: {e}"))  # noqa
                 self.after(0, lambda: messagebox.showerror("Ошибка запуска", tb))  # noqa
@@ -384,6 +459,7 @@ class App(tk.Tk):
 
     def on_close(self) -> None:
         """ """
+        logger.info("Закрытие приложения")
         for city_en, (driver, stop_event) in list(self.active.items()):
             stop_event.set()
             driver.quit()
@@ -397,10 +473,8 @@ if __name__ == "__main__":
         app.protocol("WM_DELETE_WINDOW", app.on_close)
         app.mainloop()
     except Exception as e:
-        import traceback
-
+        logger.exception("Критическая ошибка приложения")
         error_text = traceback.format_exc()
-        print(error_text)
 
         try:
             root = tk.Tk()
