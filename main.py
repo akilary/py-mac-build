@@ -149,7 +149,7 @@ def init_driver(city_en: str) -> tuple[uc.Chrome, threading.Event]:
     options.add_argument("--no-first-run")
     options.add_argument("--no-default-browser-check")
 
-    driver = uc.Chrome(options=options, use_subprocess=True, driver_executable_path=driver_path)
+    driver = uc.Chrome(options=options, driver_executable_path=driver_path)
 
     apply_mobile_emulation(driver)
 
@@ -353,6 +353,14 @@ class App(tk.Tk):
 
 
 if __name__ == "__main__":
-    app = App()
-    app.protocol("WM_DELETE_WINDOW", app.on_close)
-    app.mainloop()
+    try:
+        app = App()
+        app.protocol("WM_DELETE_WINDOW", app.on_close)
+        app.mainloop()
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        input("Нажмите Enter для выхода...")
+
