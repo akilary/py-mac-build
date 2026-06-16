@@ -1,4 +1,6 @@
+import multiprocessing
 import shutil
+import sys
 import threading
 import time
 import tkinter as tk
@@ -10,7 +12,13 @@ from selenium.common import NoSuchWindowException, WebDriverException
 from webdriver_manager.chrome import ChromeDriverManager
 from webdriver_manager.core.driver_cache import DriverCacheManager
 
-PROFILE_DIR = Path("profiles")
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).parent
+else:
+    BASE_DIR = Path(__file__).parent
+
+
+PROFILE_DIR = BASE_DIR / "profiles"
 PROFILE_DIR.mkdir(exist_ok=True)
 
 MOBILE_UA = (
@@ -135,7 +143,7 @@ def watch_new_tabs(driver: uc.Chrome, stop_event: threading.Event) -> None:
 def init_driver(city_en: str) -> tuple[uc.Chrome, threading.Event]:
     """Инициализация драйвера"""
     driver_path = ChromeDriverManager(
-        cache_manager=DriverCacheManager(root_dir="driver_cache")
+        cache_manager=DriverCacheManager(root_dir=str(BASE_DIR / "driver_cache"))
     ).install()
 
     profile_path = (PROFILE_DIR / city_en).absolute()
@@ -149,7 +157,7 @@ def init_driver(city_en: str) -> tuple[uc.Chrome, threading.Event]:
     options.add_argument("--no-first-run")
     options.add_argument("--no-default-browser-check")
 
-    driver = uc.Chrome(options=options, driver_executable_path=driver_path)
+    driver = uc.Chrome(options=options, use_subprocess=False, driver_executable_path=driver_path)
 
     apply_mobile_emulation(driver)
 
@@ -306,22 +314,31 @@ class App(tk.Tk):
         self.update()
 
         def run():
-            driver, stop_event = init_driver(city_en)  # noqa
-            driver.get(f"https://yandex.com/")
+            try:
+                driver, stop_event = init_driver(city_en)  # noqa
+                driver.get(f"https://yandex.com/")
 
-            self.active[city_en] = (driver, stop_event)
-            self.after(0, self._refresh_list)  # noqa
-            self.after(0, lambda: self._status_var.set(f"«{city_ru}» открыт ●"))  # noqa
+                self.active[city_en] = (driver, stop_event)
+                self.after(0, self._refresh_list)  # noqa
+                self.after(0, lambda: self._status_var.set(f"«{city_ru}» открыт ●"))  # noqa
 
-            while not stop_event.is_set():
-                time.sleep(0.5)
+                while not stop_event.is_set():
+                    time.sleep(0.5)
 
-            stop_event.set()
-            driver.quit()
+                stop_event.set()
+                driver.quit()
 
-            self.active.pop(city_en, None)
-            self.after(0, self._refresh_list)  # noqa
-            self.after(0, lambda: self._status_var.set(f"«{city_ru}» закрыт"))  # noqa
+                self.active.pop(city_en, None)
+                self.after(0, self._refresh_list)  # noqa
+                self.after(0, lambda: self._status_var.set(f"«{city_ru}» закрыт"))  # noqa
+            except Exception as e:
+                print(f"Ошибка: {e}")
+                import traceback
+                traceback.print_exc()
+                self.after(0, lambda: self._status_var.set(f"Ошибка: {e}"))
+                self.after(0, lambda: messagebox.showerror("Ошибка запуска", traceback.format_exc()))
+                self.active.pop(city_en, None)
+                self.after(0, self._refresh_list)
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -353,6 +370,7 @@ class App(tk.Tk):
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     try:
         app = App()
         app.protocol("WM_DELETE_WINDOW", app.on_close)
@@ -363,4 +381,3 @@ if __name__ == "__main__":
         traceback.print_exc()
     finally:
         input("Нажмите Enter для выхода...")
-
