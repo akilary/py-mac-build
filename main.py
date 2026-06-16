@@ -13,8 +13,6 @@ from tkinter import ttk, messagebox
 
 import undetected_chromedriver as uc
 from selenium.common import NoSuchWindowException, WebDriverException
-from webdriver_manager.chrome import ChromeDriverManager
-from webdriver_manager.core.driver_cache import DriverCacheManager
 
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).parent
@@ -22,7 +20,6 @@ else:
     BASE_DIR = Path(__file__).parent
 
 PROFILE_DIR = BASE_DIR / "profiles"
-PROFILE_DIR.mkdir(exist_ok=True)
 
 IS_MAC = platform.system() == "Darwin"
 
@@ -32,6 +29,8 @@ MOBILE_UA = (
 )
 
 DEVICE = (412, 915, 2.625)
+
+_WATCH_INTERVAL = 2.5 if IS_MAC else 0.7  # На Mac каждый CDP вызов стоит дороже - опрашиваем реже
 
 CITY_MAP = {
     "Moscow": "Москва",
@@ -77,25 +76,31 @@ CITY_MAP = {
     "Kaliningrad": "Калининград",
 }
 
-_WATCH_INTERVAL = 2.5 if IS_MAC else 0.7  # На Mac каждый CDP вызов стоит дороже - опрашиваем реже
 
-LOG_FILE = BASE_DIR / "debug.log"
+def _setup_logging() -> logging.Logger:
+    log_file = BASE_DIR / "debug.log"
 
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    encoding="utf-8",
-)
+    log = logging.getLogger("app")
+    if log.handlers:
+        return log
 
-logger = logging.getLogger(__name__)
+    log.setLevel(logging.DEBUG)
+    fmt = logging.Formatter("%(asctime)s | %(levelname)-8s | %(message)s")
 
-logger.info("Запуск приложения")
-logger.info("ОС: %s", platform.platform())
-logger.info("Система: %s", platform.system())
-logger.info("Архитектура: %s", platform.machine())
-logger.info("Версия Python: %s", sys.version)
-logger.info("Рабочая папка: %s", BASE_DIR)
+    fh = logging.FileHandler(log_file, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(fmt)
+
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(fmt)
+
+    log.addHandler(fh)
+    log.addHandler(ch)
+    return log
+
+
+logger = logging.getLogger("app")
 
 
 def list_profiles() -> list[str]:
@@ -111,6 +116,39 @@ def create_profile(city_en: str) -> None:
 def delete_profile(city_en: str) -> None:
     """Удаляет профиль"""
     shutil.rmtree(PROFILE_DIR / city_en, ignore_errors=True)
+
+
+def _remove_quarantine(path: str) -> None:
+    """Снимает карантин Gatekeeper с chromedriver-mac-arm64"""
+    if not IS_MAC:
+        return
+
+    p = Path(path)
+    if not p.exists():
+        logger.warning("_remove_quarantine: файл не найден: %s", path)
+        return
+
+    logger.debug("Снимаю карантин: %s", path)
+
+    before = subprocess.run(["xattr", "-l", path], capture_output=True, text=True)
+    if before.stdout.strip():
+        logger.debug("Атрибуты до:\n%s", before.stdout.strip())
+    else:
+        logger.debug("Атрибуты до: нет расширенных атрибутов")
+
+    r1 = subprocess.run(["xattr", "-dr", "com.apple.quarantine", path], capture_output=True, text=True)
+    r2 = subprocess.run(["chmod", "+x", path], capture_output=True, text=True)
+
+    if r1.returncode != 0 and r1.stderr:
+        logger.warning("xattr stderr: %s", r1.stderr.strip())
+    if r2.returncode != 0 and r2.stderr:
+        logger.warning("chmod stderr: %s", r2.stderr.strip())
+
+    after = subprocess.run(["xattr", "-l", path], capture_output=True, text=True)
+    if after.stdout.strip():
+        logger.warning("Атрибуты остались после снятия карантина:\n%s", after.stdout.strip())
+    else:
+        logger.info("Карантин успешно снят: %s", p.name)
 
 
 def apply_mobile_emulation(driver: uc.Chrome) -> None:
@@ -153,12 +191,13 @@ def watch_new_tabs(driver: uc.Chrome, stop_event: threading.Event) -> None:
                     try:
                         driver.switch_to.window(handle)
                         apply_mobile_emulation(driver)
+                        logger.debug("Эмуляция применена к новой вкладке: %s", handle)
                     except NoSuchWindowException:  # Вкладка закрылась между получением handle и switch_to
                         current_handles.discard(handle)
 
                 known_handles = current_handles
         except WebDriverException:
-            logger.info("WebDriver завершил работу")
+            logger.info("WebDriver завершил работу - останавливаю watch_new_tabs")
             break  # Браузер закрыт
 
         time.sleep(_WATCH_INTERVAL)
@@ -166,71 +205,23 @@ def watch_new_tabs(driver: uc.Chrome, stop_event: threading.Event) -> None:
     stop_event.set()
 
 
-def _remove_quarantine(driver_path: str) -> None:
-    """На Mac снимает карантин с chromedriver, иначе macOS убивает процесс (status -9)."""
-    logger.info("Снимаю карантин с chromedriver: %s", driver_path)
-
-    if IS_MAC:
-        try:
-            before = subprocess.run(
-                ["xattr", "-l", driver_path],
-                capture_output=True,
-                text=True,
-            )
-
-            logger.info("Атрибуты ДО снятия карантина:\n%s", before.stdout)
-
-            result = subprocess.run(
-                ["xattr", "-dr", "com.apple.quarantine", driver_path],
-                capture_output=True,
-                text=True,
-            )
-
-            logger.info("Код возврата xattr: %s", result.returncode)
-
-            if result.stdout:
-                logger.info("Вывод xattr:\n%s", result.stdout)
-
-            if result.stderr:
-                logger.error("Ошибки xattr:\n%s", result.stderr)
-
-            after = subprocess.run(
-                ["xattr", "-l", driver_path],
-                capture_output=True,
-                text=True,
-            )
-
-            logger.info("Атрибуты ПОСЛЕ снятия карантина:\n%s", after.stdout)
-
-        except Exception:
-            logger.exception("Ошибка при снятии карантина")
-
-
 def init_driver(city_en: str) -> tuple[uc.Chrome, threading.Event]:
     """Инициализация драйвера"""
-    driver_path = ChromeDriverManager(
-        cache_manager=DriverCacheManager(root_dir=str(BASE_DIR / "driver_cache"))
-    ).install()
-
-    logger.info("Chromedriver установлен: %s", driver_path)
-
-    try:
-        version = subprocess.run(
-            [driver_path, "--version"],
-            capture_output=True,
-            text=True,
-        )
-
-        logger.info("Версия chromedriver: %s", version.stdout.strip())
-    except Exception:
-        logger.exception("Не удалось определить версию chromedriver")
-
-    _remove_quarantine(driver_path)
-
     profile_path = (PROFILE_DIR / city_en).absolute()
     profile_path.mkdir(exist_ok=True)
+    logger.info("Профиль: %s", profile_path)
 
-    logger.info("Используется профиль: %s", profile_path)
+    if IS_MAC:
+        driver_path = str(BASE_DIR / "chromedriver-mac-arm64" / "chromedriver")
+    else:
+        driver_path = str(BASE_DIR / "chromedriver-win64" / "chromedriver.exe")
+
+    logger.info("Драйвер: %s", driver_path)
+
+    if not Path(driver_path).exists():
+        raise FileNotFoundError(f"chromedriver не найден: {driver_path}")
+
+    _remove_quarantine(driver_path)
 
     w, h, _ = DEVICE
 
@@ -240,14 +231,11 @@ def init_driver(city_en: str) -> tuple[uc.Chrome, threading.Event]:
     options.add_argument("--no-first-run")
     options.add_argument("--no-default-browser-check")
 
-    logger.info("Запускаю Chrome")
-
+    logger.info("Запускаю Chrome...")
     driver = uc.Chrome(options=options, use_subprocess=True, driver_executable_path=driver_path)
-
-    logger.info("Chrome успешно запущен")
+    logger.info("Chrome запущен")
 
     apply_mobile_emulation(driver)
-
     logger.info("Мобильная эмуляция применена")
 
     stop_event = threading.Event()
@@ -403,14 +391,14 @@ class App(tk.Tk):
         self.update()
 
         def run():
-            logger.info("Открытие профиля: %s", city_en)
+            logger.info("Открываю профиль: %s", city_en)
             launched = False
             try:
                 driver, stop_event = init_driver(city_en)  # noqa
                 self._status_var.set(f"Запускаю «{city_ru}»...")
 
                 driver.get(f"https://yandex.com/")
-                logger.info("Страница открыта")
+                logger.info("Страница открыта: yandex.com")
                 launched = True
 
                 self.active[city_en] = (driver, stop_event)
@@ -422,11 +410,9 @@ class App(tk.Tk):
 
                 stop_event.set()
                 driver.quit()
-
             except Exception as e:
                 tb = traceback.format_exc()
-                logger.exception("Ошибка при запуске профиля")
-
+                logger.error("Ошибка при запуске профиля %s:\n%s", city_en, tb)
                 self.after(0, lambda: self._status_var.set(f"Ошибка: {e}"))  # noqa
                 self.after(0, lambda: messagebox.showerror("Ошибка запуска", tb))  # noqa
 
@@ -454,6 +440,7 @@ class App(tk.Tk):
                 "Удалить", f"Удалить профиль «{city_ru}»?\nВсе данные (cookies, история) будут удалены."
         ):
             delete_profile(city_en)
+            logger.info("Удалён профиль: %s", city_en)
             self._status_var.set(f"Профиль «{city_ru}» удалён")
             self._refresh_list()
 
@@ -466,20 +453,33 @@ class App(tk.Tk):
         self.destroy()
 
 
-if __name__ == "__main__":
-    multiprocessing.freeze_support()
+def main() -> None:
+    PROFILE_DIR.mkdir(exist_ok=True)
+
+    log = _setup_logging()
+    log.info("=" * 50)
+    log.info("Запуск приложения")
+    log.info("ОС: %s | Архитектура: %s", platform.platform(), platform.machine())
+    log.info("Python: %s", sys.version.split()[0])
+    log.info("Рабочая папка: %s", BASE_DIR)
+    log.info("=" * 50)
+
     try:
         app = App()
         app.protocol("WM_DELETE_WINDOW", app.on_close)
         app.mainloop()
-    except Exception as e:
+    except Exception:
         logger.exception("Критическая ошибка приложения")
-        error_text = traceback.format_exc()
 
         try:
             root = tk.Tk()
             root.withdraw()
-            messagebox.showerror("Критическая ошибка", error_text)
+            messagebox.showerror("Критическая ошибка", traceback.format_exc())
             root.destroy()
         except Exception:
             pass
+
+
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    main()
