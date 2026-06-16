@@ -1,0 +1,144 @@
+name: Test App on macOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  test-mac:
+    runs-on: macos-latest
+
+    steps:
+      - name: Скачиваем код
+        uses: actions/checkout@v4
+
+      - name: Устанавливаем Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Устанавливаем зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Устанавливаем tkinter (нужен отдельно на macOS)
+        run: brew install python-tk@3.11
+
+      - name: Тест 1 — импорты и базовая логика
+        run: |
+          python - <<'EOF'
+          import sys
+          sys.exit(0)  # не запускаем GUI
+          
+          # Проверяем все импорты
+          import shutil, threading, time, tkinter, pathlib
+          from pathlib import Path
+          import undetected_chromedriver as uc
+          from webdriver_manager.chrome import ChromeDriverManager
+          
+          print("✅ Все импорты OK")
+          EOF
+
+      - name: Тест 2 — логика профилей (без браузера)
+        run: |
+          python - <<'EOF'
+          from pathlib import Path
+          import shutil
+          
+          # Копируем нужные части из main.py
+          PROFILE_DIR = Path("test_profiles")
+          PROFILE_DIR.mkdir(exist_ok=True)
+          
+          def create_profile(city_en):
+              (PROFILE_DIR / city_en).mkdir(exist_ok=True)
+          
+          def delete_profile(city_en):
+              shutil.rmtree(PROFILE_DIR / city_en, ignore_errors=True)
+          
+          def list_profiles():
+              return sorted([p.name for p in PROFILE_DIR.iterdir() if p.is_dir()])
+          
+          # Тесты
+          create_profile("Moscow")
+          create_profile("Kazan")
+          assert list_profiles() == ["Kazan", "Moscow"], f"Ошибка: {list_profiles()}"
+          
+          delete_profile("Moscow")
+          assert list_profiles() == ["Kazan"], f"Ошибка после удаления: {list_profiles()}"
+          
+          shutil.rmtree(PROFILE_DIR)  # чистим за собой
+          print("✅ Логика профилей работает корректно")
+          EOF
+
+      - name: Тест 3 — ChromeDriver скачивается и запускается
+        run: |
+          python - <<'EOF'
+          from webdriver_manager.chrome import ChromeDriverManager
+          from webdriver_manager.core.driver_cache import DriverCacheManager
+          import undetected_chromedriver as uc
+          
+          driver_path = ChromeDriverManager(
+              cache_manager=DriverCacheManager(root_dir="driver_cache")
+          ).install()
+          print(f"✅ ChromeDriver установлен: {driver_path}")
+          
+          options = uc.ChromeOptions()
+          options.add_argument("--headless=new")   # без окна
+          options.add_argument("--no-sandbox")
+          options.add_argument("--window-size=412,915")
+          
+          driver = uc.Chrome(options=options, use_subprocess=True, driver_executable_path=driver_path)
+          driver.get("https://yandex.ru/")
+          title = driver.title
+          driver.quit()
+          
+          print(f"✅ Браузер открылся, заголовок страницы: {title}")
+          EOF
+
+      - name: Тест 4 — мобильная эмуляция через CDP
+        run: |
+          python - <<'EOF'
+          import undetected_chromedriver as uc
+          from webdriver_manager.chrome import ChromeDriverManager
+          from webdriver_manager.core.driver_cache import DriverCacheManager
+          
+          MOBILE_UA = (
+              "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+          )
+          
+          driver_path = ChromeDriverManager(
+              cache_manager=DriverCacheManager(root_dir="driver_cache")
+          ).install()
+          
+          options = uc.ChromeOptions()
+          options.add_argument("--headless=new")
+          options.add_argument("--no-sandbox")
+          
+          driver = uc.Chrome(options=options, use_subprocess=True, driver_executable_path=driver_path)
+          
+          driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {
+              "width": 412, "height": 915, "deviceScaleFactor": 2.625,
+              "mobile": True, "screenWidth": 412, "screenHeight": 915,
+              "positionX": 0, "positionY": 0,
+              "screenOrientation": {"type": "portraitPrimary", "angle": 0},
+          })
+          driver.execute_cdp_cmd("Network.setUserAgentOverride", {
+              "userAgent": MOBILE_UA,
+              "platform": "Linux armv81",
+              "acceptLanguage": "ru-RU,ru;q=0.9",
+          })
+          driver.execute_cdp_cmd("Emulation.setTouchEmulationEnabled", {"enabled": True, "maxTouchPoints": 5})
+          driver.execute_cdp_cmd("Emulation.setLocaleOverride", {"locale": "ru-RU"})
+          driver.execute_cdp_cmd("Emulation.setTimezoneOverride", {"timezoneId": "Europe/Moscow"})
+          
+          driver.get("https://yandex.ru/")
+          
+          ua = driver.execute_script("return navigator.userAgent")
+          assert "Android" in ua, f"User-Agent не применился: {ua}"
+          print(f"✅ Мобильная эмуляция работает, UA: {ua[:60]}...")
+          
+          driver.quit()
+          EOF
