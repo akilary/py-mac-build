@@ -8,26 +8,49 @@ jobs:
     runs-on: macos-latest
 
     steps:
-    - name: Проверяем репозиторий (скачиваем код)
+    - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Устанавливаем Python
+    - name: Установка Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 
-    - name: Устанавливаем зависимости из requirements.txt и PyInstaller
+    - name: Установка зависимостей
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller
         pip install -r requirements.txt
 
-    - name: Собираем файл через PyInstaller
+    - name: Установка Chromium для упаковки в бандл
       run: |
-       pyinstaller --onefile main.py
+        PLAYWRIGHT_BROWSERS_PATH=./playwright_browsers python -m playwright install chromium
 
-    - name: Загружаем готовый файл в GitHub (чтобы вы могли его скачать)
+    - name: Сборка через PyInstaller
+      run: |
+        pyinstaller \
+          --onedir \
+          --windowed \
+          --name "MobileProfiles" \
+          --add-data "playwright_browsers:playwright_browsers" \
+          --collect-all playwright \
+          --hidden-import tkinter \
+          --hidden-import _tkinter \
+          main.py
+
+    - name: Снятие карантина с бинарника и браузера
+      run: |
+        xattr -cr dist/MobileProfiles.app
+        codesign --sign - --force --deep dist/MobileProfiles.app
+
+    - name: Архивируем .app
+      run: |
+        cd dist
+        zip -r MobileProfiles-macOS.zip MobileProfiles.app
+
+    - name: Загружаем артефакт
       uses: actions/upload-artifact@v4
       with:
-        name: macos-app
-        path: dist/
+        name: MobileProfiles-macOS
+        path: dist/MobileProfiles-macOS.zip
+        retention-days: 7
