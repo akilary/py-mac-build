@@ -54,6 +54,34 @@ jobs:
           cd dist
           zip -r MobileProfiles-macOS.zip MobileProfiles.app playwright_browsers
 
+      - name: Установка rclone
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+
+      - name: Создание credentials
+        run: |
+          cat > service-account.json << 'EOF'
+          ${{ secrets.GDRIVE_CREDENTIALS }}
+          EOF
+
+      - name: Настройка rclone
+        run: |
+          mkdir -p ~/.config/rclone
+
+          cat > ~/.config/rclone/rclone.conf << EOF
+          [gdrive]
+          type = drive
+          scope = drive
+          service_account_file = ${{ github.workspace }}/service-account.json
+          EOF
+
+      - name: Загрузка ZIP на Google Drive
+        run: |
+          rclone copy \
+            dist/MobileProfiles-macOS.zip \
+            gdrive: \
+            --drive-root-folder-id 1CWHlRP_0YsuE8ErLfL1e1OpJamrqTO8i
+
       - name: Загружаем артефакт
         uses: actions/upload-artifact@v4
         with:
