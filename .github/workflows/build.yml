@@ -3,6 +3,9 @@ name: Build App for macOS
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-mac:
     runs-on: macos-latest
@@ -54,37 +57,24 @@ jobs:
           cd dist
           zip -r MobileProfiles-macOS.zip MobileProfiles.app playwright_browsers
 
-      - name: Установка rclone
-        run: |
-          curl https://rclone.org/install.sh | sudo bash
-
-      - name: Создание credentials
-        run: |
-          cat > service-account.json << 'EOF'
-          ${{ secrets.GDRIVE_CREDENTIALS }}
-          EOF
-
-      - name: Настройка rclone
-        run: |
-          mkdir -p ~/.config/rclone
-
-          cat > ~/.config/rclone/rclone.conf << EOF
-          [gdrive]
-          type = drive
-          scope = drive
-          service_account_file = ${{ github.workspace }}/service-account.json
-          EOF
-
-      - name: Загрузка ZIP на Google Drive
-        run: |
-          rclone copy \
-            dist/MobileProfiles-macOS.zip \
-            gdrive: \
-            --drive-root-folder-id 1CWHlRP_0YsuE8ErLfL1e1OpJamrqTO8i
-
       - name: Загружаем артефакт
         uses: actions/upload-artifact@v4
         with:
           name: MobileProfiles-macOS
           path: dist/MobileProfiles-macOS.zip
           retention-days: 7
+
+      - name: Создать тег релиза
+        id: tag
+        run: |
+          echo "tag=build-${GITHUB_RUN_NUMBER}" >> $GITHUB_OUTPUT
+
+      - name: Создать GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: macOS Build #${{ github.run_number }}
+          files: dist/MobileProfiles-macOS.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
