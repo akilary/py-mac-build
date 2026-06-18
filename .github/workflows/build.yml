@@ -35,6 +35,7 @@ jobs:
             --collect-all playwright \
             --hidden-import tkinter \
             --hidden-import _tkinter \
+            --osx-bundle-identifier "com.mobileprofiles.app" \
             main.py
 
       - name: Устанавливаем Chromium рядом с .app
@@ -42,15 +43,16 @@ jobs:
           PLAYWRIGHT_BROWSERS_PATH=dist/playwright_browsers \
             python -m playwright install chromium
 
-      - name: Снятие карантина с бинарника и браузера
+      - name: Снятие карантина
         run: |
           xattr -cr dist/MobileProfiles.app
+          xattr -cr dist/playwright_browsers
           codesign --sign - --force --deep dist/MobileProfiles.app
 
-      - name: Архивируем .app
+      - name: Архивируем .app и браузер вместе
         run: |
           cd dist
-          zip -r MobileProfiles-macOS.zip MobileProfiles.app
+          zip -r MobileProfiles-macOS.zip MobileProfiles.app playwright_browsers
 
       - name: Загружаем артефакт
         uses: actions/upload-artifact@v4

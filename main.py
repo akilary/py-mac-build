@@ -184,11 +184,27 @@ def launch_browser(city: str, on_progress: Callable) -> BrowserContext:
     on_progress(f"Запускаю '{city}'...")
 
     p = sync_playwright().start()
+
+    chromium_path = None
+    if getattr(sys, "frozen", False):
+        app_contents = Path(sys.executable).parent.parent
+        app_dir = app_contents.parent
+        browsers_dir = app_dir.parent / "playwright_browsers"
+        candidates = list(browsers_dir.glob(
+            "chromium-*/chrome-mac-arm64/Google Chrome for Testing.app"
+            "/Contents/MacOS/Google Chrome for Testing"
+        ))
+
+        if candidates:
+            chromium_path = str(candidates[0])
+            logger.info("Chromium найден: %s", chromium_path)
+
     device = dict(p.devices["Pixel 7"])
     device.pop("default_browser_type", None)
 
     context = p.chromium.launch_persistent_context(
         user_data_dir=str(profile_path),
+        executable_path=chromium_path,
         headless=False,
         args=["--disable-blink-features=AutomationControlled", "--disable-infobars", "--disable-gpu-sandbox"],
         timezone_id=city_info.tz,
